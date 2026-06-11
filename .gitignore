@@ -1,0 +1,23 @@
+# Build output
+/build/
+/dist/
+
+# Compiled artifacts (the DLL is built into /build, never committed)
+*.dll
+*.so
+*.dylib
+*.exe
+*.lib
+
+# Local config / secrets (never commit credentials or keys)
+config.json
+test-config.json
+*.cer
+*.pfx
+*.p12
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

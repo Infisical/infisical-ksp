@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+  build-windows:
+    name: Build Windows (amd64)
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install the Cryptographic Provider Development Kit
+        shell: pwsh
+        run: |
+          $url = "https://download.microsoft.com/download/1/7/6/176909b0-50f2-4df3-b29b-830a17ea7e38/CPDK_RELEASE_UPDATE/cpdksetup.exe"
+          Invoke-WebRequest -UseBasicParsing $url -OutFile cpdksetup.exe
+          Start-Process .\cpdksetup.exe -ArgumentList '/quiet','/norestart' -Wait
+          $hdr = Get-ChildItem "C:\Program Files (x86)\Windows Kits","C:\Program Files\Windows Kits" -Recurse -Filter ncrypt_provider.h -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $hdr) { throw "ncrypt_provider.h not found after installing the CPDK" }
+          # The Go tool splits CGO_CFLAGS on spaces, so the include path must be space-free. The CPDK
+          # installs under "Program Files (x86)"; copy its Include dir to a space-free location.
+          New-Item -ItemType Directory -Force -Path C:\cpdk | Out-Null
+          Copy-Item (Join-Path (Split-Path $hdr.FullName) '*') C:\cpdk -Recurse -Force
+          "CGO_CFLAGS=-IC:\cpdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: Build
+        shell: pwsh
+        env:
+          CGO_ENABLED: "1"
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          gcc --version
+          go build -buildmode=c-shared -ldflags="-s -w" -o infisical-ksp.dll .\cmd\ksp
+          if (-not (Test-Path infisical-ksp.dll)) { throw "build produced no infisical-ksp.dll" }
+          # Confirm the single required export is present (dumpbin is an MSVC tool; skip if absent).
+          $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+          if ($dumpbin) { & dumpbin.exe /exports infisical-ksp.dll | Select-String GetKeyStorageInterface }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: infisical-ksp.dll
+          path: infisical-ksp.dll
+
+  release:
+    name: Create Release
+    needs: build-windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release files
+        run: |
+          mkdir release
+          find artifacts -type f -name 'infisical-ksp.dll' -exec mv {} release/ \;
+          ls -la release/
+
+      - name: Generate checksums
+        working-directory: release
+        run: |
+          sha256sum infisical-ksp.dll > checksums-sha256.txt
+          cat checksums-sha256.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/*

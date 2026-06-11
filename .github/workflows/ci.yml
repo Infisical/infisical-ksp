@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+
+  test:
+    name: vet + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Verify formatting
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+
+  windows:
+    name: build + test (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Test OS-agnostic packages
+        run: go test ./internal/...
+      - name: Install the Cryptographic Provider Development Kit
+        shell: pwsh
+        run: |
+          $url = "https://download.microsoft.com/download/1/7/6/176909b0-50f2-4df3-b29b-830a17ea7e38/CPDK_RELEASE_UPDATE/cpdksetup.exe"
+          Invoke-WebRequest -UseBasicParsing $url -OutFile cpdksetup.exe
+          Start-Process .\cpdksetup.exe -ArgumentList '/quiet','/norestart' -Wait
+          $hdr = Get-ChildItem "C:\Program Files (x86)\Windows Kits","C:\Program Files\Windows Kits" -Recurse -Filter ncrypt_provider.h -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $hdr) { throw "ncrypt_provider.h not found after installing the CPDK" }
+          # The Go tool splits CGO_CFLAGS on spaces, so copy the CPDK Include dir to a space-free path.
+          New-Item -ItemType Directory -Force -Path C:\cpdk | Out-Null
+          Copy-Item (Join-Path (Split-Path $hdr.FullName) '*') C:\cpdk -Recurse -Force
+          "CGO_CFLAGS=-IC:\cpdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+      - name: Build the DLL (compile-check the cgo bridge)
+        shell: pwsh
+        env:
+          CGO_ENABLED: "1"
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          go build -buildmode=c-shared -ldflags="-s -w" -o infisical-ksp.dll .\cmd\ksp
+          if (-not (Test-Path infisical-ksp.dll)) { throw "build produced no infisical-ksp.dll" }
