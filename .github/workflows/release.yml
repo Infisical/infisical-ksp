@@ -26,9 +26,20 @@ jobs:
         run: go test -race ./...
 
   build-windows:
-    name: Build Windows (amd64)
+    name: Build Windows (${{ matrix.arch }})
     needs: test
     runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            goarch: amd64
+            output: infisical-ksp.dll
+            ldflags: "-s -w"
+          - arch: x86
+            goarch: "386"
+            output: infisical-ksp-x86.dll
+            ldflags: "-s -w -extldflags=-Wl,--kill-at"
     steps:
       - uses: actions/checkout@v4
 
@@ -50,24 +61,42 @@ jobs:
           Copy-Item (Join-Path (Split-Path $hdr.FullName) '*') C:\cpdk -Recurse -Force
           "CGO_CFLAGS=-IC:\cpdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
 
+      - name: Install 32-bit MinGW toolchain (x86 only)
+        if: matrix.arch == 'x86'
+        shell: pwsh
+        run: |
+          # The x86_64 MinGW on the runner cannot target 32-bit, so pull the i686 toolchain from MSYS2.
+          C:\msys64\usr\bin\pacman.exe -Sy --noconfirm
+          C:\msys64\usr\bin\pacman.exe -S --needed --noconfirm mingw-w64-i686-gcc
+          $cc = "C:\msys64\mingw32\bin\gcc.exe"
+          if (-not (Test-Path $cc)) { throw "i686 gcc not found at $cc after install" }
+          & $cc --version
+          "CC=$cc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+          "C:\msys64\mingw32\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
+
       - name: Build
         shell: pwsh
         env:
           CGO_ENABLED: "1"
           GOOS: windows
-          GOARCH: amd64
+          GOARCH: ${{ matrix.goarch }}
         run: |
-          gcc --version
-          go build -buildmode=c-shared -ldflags="-s -w" -o infisical-ksp.dll .\cmd\ksp
-          if (-not (Test-Path infisical-ksp.dll)) { throw "build produced no infisical-ksp.dll" }
-          # Confirm the single required export is present (dumpbin is an MSVC tool; skip if absent).
+          go build -buildmode=c-shared -ldflags="${{ matrix.ldflags }}" -o ${{ matrix.output }} .\cmd\ksp
+          if (-not (Test-Path ${{ matrix.output }})) { throw "build produced no ${{ matrix.output }}" }
+          # CNG resolves the provider by the undecorated export name. Confirm it is present and that
+          # the 32-bit build did not leave the stdcall @nn decoration on it (dumpbin is an MSVC tool).
           $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
-          if ($dumpbin) { & dumpbin.exe /exports infisical-ksp.dll | Select-String GetKeyStorageInterface }
+          if ($dumpbin) {
+            $exports = & dumpbin.exe /exports ${{ matrix.output }}
+            if (-not ($exports | Select-String "GetKeyStorageInterface")) { throw "GetKeyStorageInterface export missing" }
+            if ($exports | Select-String "GetKeyStorageInterface@") { throw "GetKeyStorageInterface is name-decorated (@nn); CNG will not resolve it" }
+            $exports | Select-String GetKeyStorageInterface
+          }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: infisical-ksp.dll
-          path: infisical-ksp.dll
+          name: ${{ matrix.output }}
+          path: ${{ matrix.output }}
 
   release:
     name: Create Release
@@ -81,13 +110,13 @@ jobs:
       - name: Collect release files
         run: |
           mkdir release
-          find artifacts -type f -name 'infisical-ksp.dll' -exec mv {} release/ \;
+          find artifacts -type f \( -name 'infisical-ksp.dll' -o -name 'infisical-ksp-x86.dll' \) -exec mv {} release/ \;
           ls -la release/
 
       - name: Generate checksums
         working-directory: release
         run: |
-          sha256sum infisical-ksp.dll > checksums-sha256.txt
+          sha256sum infisical-ksp.dll infisical-ksp-x86.dll > checksums-sha256.txt
           cat checksums-sha256.txt
 
       - name: Create GitHub Release

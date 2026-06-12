@@ -37,8 +37,19 @@ jobs:
         run: go test -race ./...
 
   windows:
-    name: build + test (windows)
+    name: build + test (windows ${{ matrix.arch }})
     runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            goarch: amd64
+            output: infisical-ksp.dll
+            ldflags: "-s -w"
+          - arch: x86
+            goarch: "386"
+            output: infisical-ksp-x86.dll
+            ldflags: "-s -w -extldflags=-Wl,--kill-at"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -58,12 +69,28 @@ jobs:
           New-Item -ItemType Directory -Force -Path C:\cpdk | Out-Null
           Copy-Item (Join-Path (Split-Path $hdr.FullName) '*') C:\cpdk -Recurse -Force
           "CGO_CFLAGS=-IC:\cpdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+      - name: Install 32-bit MinGW toolchain (x86 only)
+        if: matrix.arch == 'x86'
+        shell: pwsh
+        run: |
+          C:\msys64\usr\bin\pacman.exe -Sy --noconfirm
+          C:\msys64\usr\bin\pacman.exe -S --needed --noconfirm mingw-w64-i686-gcc
+          $cc = "C:\msys64\mingw32\bin\gcc.exe"
+          if (-not (Test-Path $cc)) { throw "i686 gcc not found at $cc after install" }
+          "CC=$cc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+          "C:\msys64\mingw32\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
       - name: Build the DLL (compile-check the cgo bridge)
         shell: pwsh
         env:
           CGO_ENABLED: "1"
           GOOS: windows
-          GOARCH: amd64
+          GOARCH: ${{ matrix.goarch }}
         run: |
-          go build -buildmode=c-shared -ldflags="-s -w" -o infisical-ksp.dll .\cmd\ksp
-          if (-not (Test-Path infisical-ksp.dll)) { throw "build produced no infisical-ksp.dll" }
+          go build -buildmode=c-shared -ldflags="${{ matrix.ldflags }}" -o ${{ matrix.output }} .\cmd\ksp
+          if (-not (Test-Path ${{ matrix.output }})) { throw "build produced no ${{ matrix.output }}" }
+          $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+          if ($dumpbin) {
+            $exports = & dumpbin.exe /exports ${{ matrix.output }}
+            if (-not ($exports | Select-String "GetKeyStorageInterface")) { throw "GetKeyStorageInterface export missing" }
+            if ($exports | Select-String "GetKeyStorageInterface@") { throw "GetKeyStorageInterface is name-decorated (@nn); CNG will not resolve it" }
+          }

@@ -32,7 +32,7 @@ The **Infisical KSP** is a Windows [Cryptography API: Next Generation (CNG)](htt
 
 It is the Windows-native sibling of the [Infisical PKCS#11 module](https://github.com/Infisical/infisical-pkcs-11): same backend, same sign endpoint, same approvals. PKCS#11 covers cross-platform tools (`jarsigner`, `osslsigncode`, `pkcs11-tool`); this covers native `signtool` on Windows.
 
-Each **Signer** in your Infisical project appears as one CNG key, selected with signtool's `/kc` flag.
+Each **Signer** in Infisical Cert Manager appears as one CNG key, selected with signtool's `/kc` flag.
 
 ## Features
 
@@ -40,28 +40,28 @@ Each **Signer** in your Infisical project appears as one CNG key, selected with 
 - **Native signtool / Authenticode**: Works with the Microsoft `signtool` you already use, through Windows CNG. No changes to your build pipeline.
 - **[RSA and ECDSA Support](#supported-algorithms)**: SHA-256/384/512 with PKCS#1 v1.5 and PSS for RSA, and ECDSA on P-256, P-384, and P-521.
 - **[Approval Workflows](#approval-workflow)**: Require human review before signing, bounded by a signature count and/or a time window per approval.
-- **[Audit Logging](https://infisical.com/docs/documentation/platform/audit-logs)**: Every signing operation is recorded with actor, timestamp, and client metadata.
-- **Windows x86_64**: A single pre-built DLL, registered once per machine.
+- **Signing activity & audit logs**: Every signing operation is recorded in the Signer's signing activity, and in [Infisical audit logs](https://infisical.com/docs/documentation/platform/audit-logs), with actor, timestamp, and client metadata.
+- **Windows x64 and x86**: Pre-built DLLs for the 64-bit and 32-bit `signtool`, registered once per machine.
 
 ## Prerequisites
 
-- An Infisical instance with the **Cert Manager** product enabled
-- At least one **Signer** created (Cert Manager > Code Signing > Signers)
-- The Signer must be backed by an Internal CA, AWS Private CA, or Azure AD CS
-- A **Machine Identity** configured for Universal Auth, added as a member of the Signer with the Administrator or Operator role. Membership is configured on the signer's Members tab.
-- If using approval policies: an approved sign request for the signer before signing
+- Access to **Cert Manager** in Infisical
+- At least one **Signer** created (Cert Manager > Code Signing > Signers), with a certificate issued from its CA
+- A way to authenticate as a member of the Signer with the Administrator or Operator role (the signer's Members tab): either a **Machine Identity** with Universal Auth (have its **Client ID** and **Client Secret** ready) or an Infisical **access token** (a user's or a machine identity's). See [Authentication](#authentication).
+- If the Signer has an approval policy: approved signing access before you sign
 - A **Windows x64** machine (Windows 10/11 or Windows Server 2016 and later) with Administrator rights (to register the provider)
-- The **64-bit `signtool`** (from the Windows SDK). The provider is 64-bit, so the 32-bit `signtool` cannot load it.
+- **`signtool`** (from the Windows SDK). The provider ships as a 64-bit DLL (`infisical-ksp.dll`) for the 64-bit `signtool` and a 32-bit DLL (`infisical-ksp-x86.dll`) for the 32-bit `signtool`. Use the DLL that matches the `signtool` you run; the 64-bit one is the usual choice.
 
 ## Quick Start
 
 ### 1. Install
 
-Download `infisical-ksp.dll` from the [releases page](https://github.com/Infisical/infisical-ksp/releases):
+Download the DLL that matches your `signtool` from the [releases page](https://github.com/Infisical/infisical-ksp/releases):
 
-| Platform | File |
+| signtool | File |
 |----------|------|
-| Windows x86_64 | `infisical-ksp.dll` |
+| 64-bit (typical) | `infisical-ksp.dll` |
+| 32-bit | `infisical-ksp-x86.dll` |
 
 Or build from source (see [Building from Source](#building-from-source)).
 
@@ -86,21 +86,30 @@ if ($cur -notcontains $prov) { Set-ItemProperty -Path $iface -Name Providers -Va
 
 Then reboot once: CNG caches its provider configuration and picks up the new provider on restart.
 
+> **Signing with the 32-bit `signtool`?** It runs under WOW64 and loads providers from `SysWOW64`, so also drop the 32-bit DLL there under the same name. The registry entries above are shared by both architectures, so you do not repeat them:
+>
+> ```powershell
+> Copy-Item .\infisical-ksp-x86.dll "$env:windir\SysWOW64\infisical-ksp.dll" -Force
+> ```
+
 ### 3. Configure
 
-Create `%ProgramData%\Infisical\config.json` (or set `INFISICAL_KSP_CONFIG` to a custom path):
+The provider needs your Infisical server URL and Machine Identity credentials. The simplest setup is environment variables only, with no config file:
+
+```powershell
+$env:INFISICAL_SERVER_URL = "https://app.infisical.com"
+$env:INFISICAL_UNIVERSAL_AUTH_CLIENT_ID = "your-client-id"
+$env:INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET = "your-client-secret"
+```
+
+`signtool` runs in its own process, so set these in the same session (or CI job) that runs it.
+
+Prefer a config file? Create `%ProgramData%\Infisical\config.json` (or point `INFISICAL_CONFIG` at a custom path) with at least `server_url`, and keep credentials in environment variables:
 
 ```json
 {
   "server_url": "https://app.infisical.com"
 }
-```
-
-Set credentials via environment variables (recommended):
-
-```powershell
-$env:INFISICAL_UNIVERSAL_AUTH_CLIENT_ID = "your-client-id"
-$env:INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET = "your-client-secret"
 ```
 
 ### 4. Sign
@@ -118,25 +127,27 @@ signtool sign /fd SHA256 /f your-signer.cer `
 
 ## Configuration
 
-The provider reads a JSON config file and environment variables. Environment variables take precedence over config file values for credentials.
+The provider is configured by environment variables and an optional JSON config file. A config file is not required as long as `server_url` and the credentials are supplied via environment variables. When both are present, environment variables take precedence.
 
 ### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID` | Machine Identity client ID |
-| `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET` | Machine Identity client secret |
-| `INFISICAL_KSP_CONFIG` | Path to config file (default: `%ProgramData%\Infisical\config.json`) |
-| `INFISICAL_KSP_SERVER_URL` | Override `server_url` from the config file |
+| `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID` | Machine Identity client ID (Universal Auth) |
+| `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET` | Machine Identity client secret (Universal Auth) |
+| `INFISICAL_TOKEN` | An Infisical access token (a user or machine identity JWT). Selects token auth; used instead of Universal Auth credentials |
+| `INFISICAL_CONFIG` | Path to config file (default: `%ProgramData%\Infisical\config.json`) |
+| `INFISICAL_SERVER_URL` | Override `server_url` from the config file |
 
 ### Config File
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `server_url` | Yes | (none) | Infisical server URL |
-| `auth.method` | No | `universal-auth` | Authentication method (only `universal-auth` is supported) |
-| `auth.client_id` | No | (none) | Machine Identity client ID (prefer env var) |
-| `auth.client_secret` | No | (none) | Machine Identity client secret (prefer env var) |
+| `auth.method` | No | `universal-auth` | Authentication method: `universal-auth` or `token` |
+| `auth.client_id` | No | (none) | Machine Identity client ID, for `universal-auth` (prefer env var) |
+| `auth.client_secret` | No | (none) | Machine Identity client secret, for `universal-auth` (prefer env var) |
+| `auth.token` | No | (none) | Infisical access token, for `token` auth (prefer the env var) |
 | `tls.ca_cert_path` | No | (none) | Custom CA certificate for self-hosted instances |
 | `tls.skip_verify` | No | `false` | Skip TLS verification (development only) |
 | `cache.token_ttl_seconds` | No | `300` | Auth token cache duration |
@@ -173,23 +184,24 @@ The provider reads a JSON config file and environment variables. Environment var
 
 ### Authentication
 
-The provider uses **[Universal Auth](https://infisical.com/docs/documentation/platform/identities/universal-auth)** (Machine Identity) to authenticate with Infisical. Credentials can be provided two ways (in order of precedence):
+The provider supports two ways to authenticate with Infisical.
 
-1. **Environment variables** (recommended for CI/CD and production):
-   ```powershell
-   $env:INFISICAL_UNIVERSAL_AUTH_CLIENT_ID = "your-client-id"
-   $env:INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET = "your-client-secret"
-   ```
+**Universal Auth (Machine Identity)** is the default. The provider exchanges the client ID/secret for an access token and refreshes it automatically. Provide the credentials via environment variables (recommended) or the config file:
 
-2. **Config file** (convenient for development):
-   ```json
-   {
-     "auth": {
-       "client_id": "your-client-id",
-       "client_secret": "your-client-secret"
-     }
-   }
-   ```
+```powershell
+$env:INFISICAL_UNIVERSAL_AUTH_CLIENT_ID = "your-client-id"
+$env:INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET = "your-client-secret"
+```
+
+**Token auth** uses an Infisical access token directly, either a user's token or a machine identity's. Setting `INFISICAL_TOKEN` selects it:
+
+```powershell
+$env:INFISICAL_TOKEN = "your-access-token"
+```
+
+> **Token auth is temporary.** The provider uses the token as-is and does not refresh it. When the token expires, signing fails with `401` until you set a new token.
+
+Environment variables take precedence over the config file, and `INFISICAL_TOKEN` takes precedence over Universal Auth credentials.
 
 When credentials are available, the provider authenticates automatically the first time signtool opens it.
 
@@ -220,39 +232,9 @@ When credentials are available, the provider authenticates automatically the fir
 
 If a Signer has an approval policy, you need an approved sign request before signing. Without it, `signtool` fails with an access-denied error and the log file records the `HTTP 403` along with a hint to obtain approved access.
 
-Approvals are granted out of band: an approver approves a request (or an Administrator pre-approves one) via the Infisical UI (Cert Manager > Code Signing > Signers > `<signer>` > Approvals tab) or the API. Once approved, retrying the same `signtool sign` command succeeds for the granted window.
+Approvals are granted out of band from the Infisical UI (Cert Manager > Code Signing > Signers > `<signer>` > Approvals tab): request signing access, then have an approver approve it (or an Administrator pre-approve it). Once approved, retrying the same `signtool sign` command succeeds for the granted window.
 
-> **Note:** Unlike the PKCS#11 module, this provider does not auto-create approval requests; request and approve access out of band before signing.
-
-<details>
-<summary>Requesting approval via API</summary>
-
-```powershell
-# Authenticate
-$token = (Invoke-RestMethod -Method Post `
-  -Uri "https://app.infisical.com/api/v1/auth/universal-auth/login" `
-  -ContentType "application/json" `
-  -Body '{"clientId":"...","clientSecret":"..."}').accessToken
-
-# Request access for an 8-hour window, capped at 10 signatures
-$start = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-$end   = (Get-Date).AddHours(8).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-
-Invoke-RestMethod -Method Post `
-  -Uri "https://app.infisical.com/api/v1/cert-manager/signers/your-signer-id/requests" `
-  -ContentType "application/json" `
-  -Headers @{ Authorization = "Bearer $token" } `
-  -Body (@{
-    justification = "CI/CD release build"
-    requestedSignings = 10
-    requestedWindowStart = $start
-    requestedWindowEnd = $end
-  } | ConvertTo-Json)
-```
-
-An approver must approve the request via the Infisical UI (Cert Manager > Code Signing > Signers > `<signer>` > Approvals tab). Once approved, signing works for the granted window.
-
-</details>
+> **Note:** Unlike the PKCS#11 module, this provider does not auto-create approval requests; request and approve access from the UI before signing.
 
 ## Uninstall
 
@@ -266,9 +248,10 @@ $iface = "$base\Configuration\Local\Default\00010001\KEY_STORAGE"
 $cur = @((Get-ItemProperty $iface -ErrorAction SilentlyContinue).Providers) | Where-Object { $_ -ne $prov }
 Set-ItemProperty -Path $iface -Name Providers -Value $cur
 Remove-Item "$env:windir\System32\infisical-ksp.dll" -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:windir\SysWOW64\infisical-ksp.dll" -Force -ErrorAction SilentlyContinue
 ```
 
-This deletes the registry entries and removes the DLL from `System32`. Your `%ProgramData%\Infisical` config and log files are left in place; delete that folder too if you no longer need them.
+This deletes the registry entries and removes the DLL from `System32` (and `SysWOW64` if you installed the 32-bit DLL). Your `%ProgramData%\Infisical` config and log files are left in place; delete that folder too if you no longer need them.
 
 ## Troubleshooting
 
@@ -294,14 +277,21 @@ Enable debug logging by adding to your config file:
 
 ## Building from Source
 
-The DLL is cgo and Windows-only. Build it on Windows (Go 1.24+, a C compiler such as MinGW or MSVC, the Windows SDK, and the Cryptographic Provider Development Kit for `ncrypt_provider.h`):
+Clone the repository first:
+
+```bash
+git clone https://github.com/Infisical/infisical-ksp.git
+cd infisical-ksp
+```
+
+The DLL itself is cgo and Windows-only. Build it on Windows (Go 1.24+, a C compiler such as MinGW or MSVC, the Windows SDK, and the Cryptographic Provider Development Kit for `ncrypt_provider.h`):
 
 ```powershell
 $env:CGO_ENABLED = "1"
 go build -buildmode=c-shared -o build\infisical-ksp.dll .\cmd\ksp
 ```
 
-The OS-agnostic packages build and test on any platform:
+The OS-agnostic packages (`internal/infisical`, `internal/cng`) build and test on any platform (Linux, macOS, or Windows), which is enough for working on everything except the cgo bridge:
 
 ```bash
 make test   # go test ./...

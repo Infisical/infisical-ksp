@@ -4,6 +4,7 @@ package infisical
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -13,13 +14,21 @@ import (
 
 // Environment variables.
 const (
-	// EnvConfigPath points at the KSP config file; if unset, the default path is used.
-	EnvConfigPath = "INFISICAL_KSP_CONFIG"
+	// EnvConfigPath points at the config file; if unset, the default path is used.
+	EnvConfigPath = "INFISICAL_CONFIG"
 	// EnvClientID / EnvClientSecret hold the Machine Identity (Universal Auth) credentials.
 	EnvClientID     = "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID"
 	EnvClientSecret = "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"
 	// EnvServerURL overrides server_url from the config file.
-	EnvServerURL = "INFISICAL_KSP_SERVER_URL"
+	EnvServerURL = "INFISICAL_SERVER_URL"
+	// EnvToken holds an Infisical access token (a user or machine identity JWT) used directly
+	EnvToken = "INFISICAL_TOKEN"
+)
+
+// Auth methods.
+const (
+	AuthMethodUniversalAuth = "universal-auth"
+	AuthMethodToken         = "token"
 )
 
 // TLSConfig controls how the client trusts the Infisical server (for self-hosted instances).
@@ -35,11 +44,13 @@ type CacheConfig struct {
 	SignerTTLSeconds int `json:"signer_ttl_seconds"`
 }
 
-// AuthConfig holds the Machine Identity credentials. Prefer the environment variables.
+// AuthConfig holds the credentials used to authenticate with Infisical. Prefer the environment
+// variables.
 type AuthConfig struct {
 	Method       string `json:"method"`
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
+	Token        string `json:"token"`
 }
 
 // Config is the on-disk JSON config plus environment overrides.
@@ -66,7 +77,7 @@ func (c *Config) setDefaults() {
 		c.LogLevel = "info"
 	}
 	if c.Auth.Method == "" {
-		c.Auth.Method = "universal-auth"
+		c.Auth.Method = AuthMethodUniversalAuth
 	}
 	// A KSP has no console, so default the log file to a well-known path.
 	if c.LogFile == "" {
@@ -84,6 +95,11 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv(EnvClientSecret); v != "" {
 		c.Auth.ClientSecret = v
 	}
+	// A token in the environment selects token auth and takes precedence over Universal Auth.
+	if v := os.Getenv(EnvToken); v != "" {
+		c.Auth.Token = v
+		c.Auth.Method = AuthMethodToken
+	}
 }
 
 func (c *Config) validate() error {
@@ -100,8 +116,15 @@ func (c *Config) validate() error {
 	if parsed.Host == "" {
 		return fmt.Errorf("server_url must include a host")
 	}
-	if c.Auth.Method != "universal-auth" {
-		return fmt.Errorf("unsupported auth method: %s (must be 'universal-auth')", c.Auth.Method)
+	switch c.Auth.Method {
+	case AuthMethodUniversalAuth:
+		// Client credentials are validated lazily at login time.
+	case AuthMethodToken:
+		if c.Auth.Token == "" {
+			return fmt.Errorf("auth method is 'token' but no token was provided: set %s", EnvToken)
+		}
+	default:
+		return fmt.Errorf("unsupported auth method: %s (must be 'universal-auth' or 'token')", c.Auth.Method)
 	}
 	return nil
 }
@@ -138,21 +161,30 @@ func ConfigPath() string {
 	return DefaultConfigPath()
 }
 
-// LoadConfig reads and validates the config file, then applies environment overrides.
+// LoadConfig reads and validates the config file, then applies environment overrides. When no
+// config path is set explicitly and the default file is absent, configuration falls back to
+// environment variables alone (INFISICAL_SERVER_URL plus the credential variables), so a
+// config file is optional.
 func LoadConfig() (*Config, error) {
-	return loadConfigFrom(ConfigPath())
+	allowMissing := os.Getenv(EnvConfigPath) == ""
+	return loadConfigFrom(ConfigPath(), allowMissing)
 }
 
-// loadConfigFrom reads config from an explicit path.
-func loadConfigFrom(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
-	}
-
+// loadConfigFrom reads config from an explicit path. When allowMissing is true, a non-existent
+// file is treated as an empty config so environment variables can supply everything.
+func loadConfigFrom(path string, allowMissing bool) (*Config, error) {
 	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
+
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
+		}
+	case allowMissing && errors.Is(err, os.ErrNotExist):
+		// No config file at the default path: rely on environment variables.
+	default:
+		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
 
 	cfg.setDefaults()

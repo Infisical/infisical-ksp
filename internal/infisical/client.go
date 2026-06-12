@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -123,7 +124,7 @@ func (c *Client) GetCertificate(token, signerID string) (pem string, err error) 
 	resp, err := c.http.R().
 		SetAuthToken(token).
 		SetResult(&out).
-		Get(fmt.Sprintf("/api/v1/cert-manager/signers/%s/certificate", signerID))
+		Get(fmt.Sprintf("/api/v1/cert-manager/signers/%s/certificate", url.PathEscape(signerID)))
 	if err != nil {
 		return "", &RequestError{Operation: op, Err: err}
 	}
@@ -154,7 +155,7 @@ func (c *Client) Sign(token, signerID string, p SignParams) (signatureB64 string
 		SetAuthToken(token).
 		SetBody(p).
 		SetResult(&out).
-		Post(fmt.Sprintf("/api/v1/cert-manager/signers/%s/sign", signerID))
+		Post(fmt.Sprintf("/api/v1/cert-manager/signers/%s/sign", url.PathEscape(signerID)))
 	if err != nil {
 		return "", &RequestError{Operation: op, Err: err}
 	}

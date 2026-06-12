@@ -106,6 +106,13 @@ func NewSession(cfg *Config) (*Session, error) {
 // ensureToken returns a valid access token, logging in (or re-logging in) if needed.
 // Callers must hold s.mu.
 func (s *Session) ensureToken() (string, error) {
+	// Token auth uses the configured access token directly and does not refresh it.
+	if s.cfg.Auth.Method == AuthMethodToken {
+		if s.cfg.Auth.Token == "" {
+			return "", fmt.Errorf("token auth selected but no token: set %s", EnvToken)
+		}
+		return s.cfg.Auth.Token, nil
+	}
 	if s.token != "" && time.Now().Before(s.tokenExpiry) {
 		return s.token, nil
 	}
