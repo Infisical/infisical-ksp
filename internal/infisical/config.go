@@ -118,8 +118,10 @@ func (c *Config) validate() error {
 	}
 	switch c.Auth.Method {
 	case AuthMethodUniversalAuth:
-		// Client credentials are validated lazily at login time.
+		// Client credentials are checked at login time, where ensureToken reports a clear error
+		// if they're missing.
 	case AuthMethodToken:
+		// The token is used directly with no login step, so validate it here for a clear early error.
 		if c.Auth.Token == "" {
 			return fmt.Errorf("auth method is 'token' but no token was provided: set %s", EnvToken)
 		}

@@ -137,7 +137,7 @@ The provider is configured by environment variables and an optional JSON config 
 | `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET` | Machine Identity client secret (Universal Auth) |
 | `INFISICAL_TOKEN` | An Infisical access token (a user or machine identity JWT). Selects token auth; used instead of Universal Auth credentials |
 | `INFISICAL_CONFIG` | Path to config file (default: `%ProgramData%\Infisical\config.json`) |
-| `INFISICAL_SERVER_URL` | Override `server_url` from the config file |
+| `INFISICAL_SERVER_URL` | The Infisical instance URL. Sets `server_url` (and overrides the config file) |
 
 ### Config File
 
