@@ -144,7 +144,7 @@ The provider is configured by environment variables and an optional JSON config 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `server_url` | Yes | (none) | Infisical server URL |
-| `auth.method` | No | `universal-auth` | Authentication method: `universal-auth` or `token` |
+| `auth.method` | No | inferred | Authentication method: `universal-auth` or `token`. Inferred from the credentials when unset (a token means `token`, otherwise `universal-auth`) |
 | `auth.client_id` | No | (none) | Machine Identity client ID, for `universal-auth` (prefer env var) |
 | `auth.client_secret` | No | (none) | Machine Identity client secret, for `universal-auth` (prefer env var) |
 | `auth.token` | No | (none) | Infisical access token, for `token` auth (prefer the env var) |

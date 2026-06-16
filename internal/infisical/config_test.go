@@ -34,11 +34,10 @@ func TestLoadConfigDefaults(t *testing.T) {
 
 func TestLoadConfigInvalid(t *testing.T) {
 	cases := map[string]string{
-		"missing server_url":  `{}`,
-		"bad scheme":          `{"server_url":"ftp://example.com"}`,
-		"no host":             `{"server_url":"https://"}`,
-		"bad auth method":     `{"server_url":"https://app.infisical.com","auth":{"method":"oidc"}}`,
-		"token without token": `{"server_url":"https://app.infisical.com","auth":{"method":"token"}}`,
+		"missing server_url": `{}`,
+		"bad scheme":         `{"server_url":"ftp://example.com"}`,
+		"no host":            `{"server_url":"https://"}`,
+		"bad auth method":    `{"server_url":"https://app.infisical.com","auth":{"method":"oidc"}}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -75,6 +74,34 @@ func TestLoadConfigTokenAuthFromConfig(t *testing.T) {
 	}
 	if cfg.Auth.Method != AuthMethodToken || cfg.Auth.Token != "jwt-abc" {
 		t.Errorf("token auth not loaded: %+v", cfg.Auth)
+	}
+}
+
+func TestLoadConfigTokenInferredFromTokenField(t *testing.T) {
+	// No auth.method set: a token in the config should select token auth on its own.
+	path := writeConfig(t, `{"server_url":"https://app.infisical.com","auth":{"token":"jwt-abc"}}`)
+	cfg, err := loadConfigFrom(path, false)
+	if err != nil {
+		t.Fatalf("loadConfigFrom: %v", err)
+	}
+	if cfg.Auth.Method != AuthMethodToken {
+		t.Errorf("token in config should infer token auth, got method %q", cfg.Auth.Method)
+	}
+}
+
+func TestTokenAuthMissingTokenIsLazy(t *testing.T) {
+	path := writeConfig(t, `{"server_url":"https://app.infisical.com","auth":{"method":"token"}}`)
+	cfg, err := loadConfigFrom(path, false)
+	if err != nil {
+		t.Fatalf("loadConfigFrom should not fail for token without token (lazy): %v", err)
+	}
+	// ...but ensureToken reports a clear error when it's actually needed.
+	sess, err := NewSession(cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if _, err := sess.ensureToken(); err == nil {
+		t.Fatal("ensureToken should error when token auth has no token")
 	}
 }
 

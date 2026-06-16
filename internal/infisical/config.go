@@ -77,7 +77,11 @@ func (c *Config) setDefaults() {
 		c.LogLevel = "info"
 	}
 	if c.Auth.Method == "" {
-		c.Auth.Method = AuthMethodUniversalAuth
+		if c.Auth.Token != "" {
+			c.Auth.Method = AuthMethodToken
+		} else {
+			c.Auth.Method = AuthMethodUniversalAuth
+		}
 	}
 	// A KSP has no console, so default the log file to a well-known path.
 	if c.LogFile == "" {
@@ -117,14 +121,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("server_url must include a host")
 	}
 	switch c.Auth.Method {
-	case AuthMethodUniversalAuth:
-		// Client credentials are checked at login time, where ensureToken reports a clear error
-		// if they're missing.
-	case AuthMethodToken:
-		// The token is used directly with no login step, so validate it here for a clear early error.
-		if c.Auth.Token == "" {
-			return fmt.Errorf("auth method is 'token' but no token was provided: set %s", EnvToken)
-		}
+	case AuthMethodUniversalAuth, AuthMethodToken:
 	default:
 		return fmt.Errorf("unsupported auth method: %s (must be 'universal-auth' or 'token')", c.Auth.Method)
 	}
