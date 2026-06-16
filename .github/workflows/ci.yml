@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+
+  test:
+    name: vet + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Verify formatting
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+
+  windows:
+    name: build + test (windows ${{ matrix.arch }})
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            goarch: amd64
+            output: infisical-ksp.dll
+            ldflags: "-s -w"
+          - arch: x86
+            goarch: "386"
+            output: infisical-ksp-x86.dll
+            ldflags: "-s -w -extldflags=-Wl,--kill-at"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Test OS-agnostic packages
+        run: go test ./internal/...
+      - name: Install the Cryptographic Provider Development Kit
+        shell: pwsh
+        run: |
+          $url = "https://download.microsoft.com/download/1/7/6/176909b0-50f2-4df3-b29b-830a17ea7e38/CPDK_RELEASE_UPDATE/cpdksetup.exe"
+          Invoke-WebRequest -UseBasicParsing $url -OutFile cpdksetup.exe
+          Start-Process .\cpdksetup.exe -ArgumentList '/quiet','/norestart' -Wait
+          $hdr = Get-ChildItem "C:\Program Files (x86)\Windows Kits","C:\Program Files\Windows Kits" -Recurse -Filter ncrypt_provider.h -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $hdr) { throw "ncrypt_provider.h not found after installing the CPDK" }
+          # The Go tool splits CGO_CFLAGS on spaces, so copy the CPDK Include dir to a space-free path.
+          New-Item -ItemType Directory -Force -Path C:\cpdk | Out-Null
+          Copy-Item (Join-Path (Split-Path $hdr.FullName) '*') C:\cpdk -Recurse -Force
+          "CGO_CFLAGS=-IC:\cpdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+      - name: Set up 32-bit MinGW toolchain (x86 only)
+        if: matrix.arch == 'x86'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: false
+          install: mingw-w64-i686-gcc
+      - name: Configure 32-bit CC (x86 only)
+        if: matrix.arch == 'x86'
+        shell: pwsh
+        run: |
+          $cc = "${{ steps.msys2.outputs.msys2-location }}\mingw32\bin\gcc.exe"
+          if (-not (Test-Path $cc)) { throw "i686 gcc not found at $cc after install" }
+          & $cc --version
+          "CC=$cc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+          "${{ steps.msys2.outputs.msys2-location }}\mingw32\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
+      - name: Build the DLL (compile-check the cgo bridge)
+        shell: pwsh
+        env:
+          CGO_ENABLED: "1"
+          GOOS: windows
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -buildmode=c-shared -ldflags="${{ matrix.ldflags }}" -o ${{ matrix.output }} .\cmd\ksp
+          if (-not (Test-Path ${{ matrix.output }})) { throw "build produced no ${{ matrix.output }}" }
+          $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+          if ($dumpbin) {
+            $exports = & dumpbin.exe /exports ${{ matrix.output }}
+            if (-not ($exports | Select-String "GetKeyStorageInterface")) { throw "GetKeyStorageInterface export missing" }
+            if ($exports | Select-String "GetKeyStorageInterface@") { throw "GetKeyStorageInterface is name-decorated (@nn); CNG will not resolve it" }
+          }
