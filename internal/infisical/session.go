@@ -2,31 +2,18 @@ package infisical
 
 import (
 	"crypto"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
-	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
-
-// hostname is resolved once and attached to sign requests as client metadata.
-var hostname = func() string {
-	h, _ := os.Hostname()
-	return h
-}()
-
-// signClientMetadata is the audit metadata sent with each sign request. The server accepts
-// only tool, hostname, and reportedIp; only the tool and hostname are reported.
-func signClientMetadata() map[string]any {
-	m := map[string]any{"tool": "signtool"}
-	if hostname != "" {
-		m["hostname"] = hostname
-	}
-	return m
-}
 
 // tokenSafetyMargin is subtracted from a token's reported lifetime so re-authentication happens
 // before it actually expires mid-request.
@@ -226,16 +213,88 @@ func (s *Session) Sign(signerID, algorithm string, digest []byte) ([]byte, error
 		return nil, err
 	}
 
+	signCtx := CurrentSigningContext()
 	sigB64, err := s.client.Sign(token, signerID, SignParams{
 		DataB64:          base64.StdEncoding.EncodeToString(digest),
 		SigningAlgorithm: algorithm,
 		IsDigest:         true,
-		ClientMetadata:   signClientMetadata(),
+		ClientMetadata:   signCtx.ClientMetadata(),
 	})
 	if err != nil {
-		return nil, err
+		return nil, s.autoRequestOnDenial(token, signerID, signCtx, digest, err)
 	}
 	return base64.StdEncoding.DecodeString(sigB64)
+}
+
+func (s *Session) autoRequestOnDenial(
+	token, signerID string,
+	signCtx SigningContext,
+	digest []byte,
+	signErr error,
+) error {
+	var apiErr *APIError
+	if !errors.As(signErr, &apiErr) || !apiErr.IsApprovalRequired() {
+		return signErr
+	}
+
+	payloadDigest := sha256.Sum256(digest)
+	id, status, err := s.requestApprovalIfConfigured(token, signerID, signCtx, hex.EncodeToString(payloadDigest[:]))
+	switch {
+	case err != nil:
+		return &ApprovalRequestFailedError{Err: signErr, RequestErr: err}
+	case id != "":
+		return &ApprovalRequestOpenedError{Err: signErr, RequestID: id, Status: status}
+	default:
+		return signErr // no approval block configured, so nothing was opened
+	}
+}
+
+func (s *Session) requestApprovalIfConfigured(
+	token, signerID string,
+	signCtx SigningContext,
+	dataHash string,
+) (id, status string, err error) {
+	cfg := s.cfg.Approval
+	if cfg.SigningCount == 0 && cfg.SigningDuration == "" {
+		return "", "", nil
+	}
+
+	params := ApprovalRequestParams{
+		Justification: approvalJustification(signCtx.Hostname),
+		Scope:         signCtx.RequestScope(dataHash),
+	}
+	if cfg.SigningCount > 0 {
+		params.RequestedSignings = cfg.SigningCount
+	}
+	if cfg.SigningDuration != "" {
+		window, parseErr := parseApprovalDuration(cfg.SigningDuration)
+		if parseErr != nil {
+			return "", "", fmt.Errorf("invalid approval.signing_duration %q: %w", cfg.SigningDuration, parseErr)
+		}
+		now := time.Now().UTC()
+		params.RequestedWindowStart = now.Format(time.RFC3339)
+		params.RequestedWindowEnd = now.Add(window).Format(time.RFC3339)
+	}
+
+	return s.client.RequestApproval(token, signerID, params)
+}
+
+func parseApprovalDuration(duration string) (time.Duration, error) {
+	if days, ok := strings.CutSuffix(duration, "d"); ok {
+		count, err := strconv.Atoi(days)
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration: %s", duration)
+		}
+		return time.Duration(count) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(duration)
+}
+
+func approvalJustification(hostname string) string {
+	if hostname == "" {
+		return "Auto-requested by the Infisical KSP"
+	}
+	return fmt.Sprintf("Auto-requested by the Infisical KSP on %s", hostname)
 }
 
 func publicKeyFromCertPEM(certPEM string) (crypto.PublicKey, error) {

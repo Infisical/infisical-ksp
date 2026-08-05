@@ -153,6 +153,8 @@ The provider is configured by environment variables and an optional JSON config 
 | `cache.token_ttl_seconds` | No | `300` | Auth token cache duration |
 | `cache.cert_ttl_seconds` | No | `3600` | Certificate data cache duration |
 | `cache.signer_ttl_seconds` | No | `300` | Signer list cache duration |
+| `approval.signing_duration` | No | — | Auto-request approval with this time window (`"30m"`, `"8h"`, `"2d"`). The provider accepts 1m to 30d as a sanity check; the real limit is the signer's approval policy, which rejects a request asking for longer. The window starts when the request is opened, not when it is approved, so allow for approval time |
+| `approval.signing_count` | No | — | Auto-request approval for this many signings |
 | `log_level` | No | `info` | Log verbosity: `trace`, `debug`, `info`, `warn`, `error` |
 | `log_file` | No | (disabled) | Path to log file (the provider runs inside signtool, so there is no console) |
 
@@ -232,9 +234,43 @@ When credentials are available, the provider authenticates automatically the fir
 
 If a Signer has an approval policy, you need an approved sign request before signing. Without it, `signtool` fails with an access-denied error and the log file records the `HTTP 403` along with a hint to obtain approved access.
 
-Approvals are granted out of band from the Infisical UI (Cert Manager > Code Signing > Signers > `<signer>` > Approvals tab): request signing access, then have an approver approve it (or an Administrator pre-approve it). Once approved, retrying the same `signtool sign` command succeeds for the granted window.
+Approvals are granted from the Infisical UI (Cert Manager > Code Signing > Signers > `<signer>` > Approvals tab): request signing access, then have an approver approve it (or an Administrator pre-approve it). Once approved, retrying the same `signtool sign` command succeeds for the granted window.
 
-> **Note:** Unlike the PKCS#11 module, this provider does not auto-create approval requests; request and approve access from the UI before signing.
+### Automatic approval requests
+
+Add an `approval` block and the provider opens a request for you the first time signing is denied:
+
+```json
+{
+  "approval": {
+    "signing_duration": "8h",
+    "signing_count": 10
+  }
+}
+```
+
+That first `signtool sign` still fails, because an approver has to act on the request. The request carries the signing situation the provider observed, so the approval it produces is [scoped](https://infisical.com/docs/documentation/platform/pki/code-signing/approvals#scoping-an-approval) to it:
+
+| Parameter | Captured from |
+|-----------|---------------|
+| Command | The host process command line (`signtool`, MSBuild, ...). Values following credential flags (`/p`, `-storepass`, `-keypass`, `-pass`, `--password`) are redacted before the command leaves the machine |
+| Signing application | The host process executable name, plus its SHA-256 checksum |
+| Hostname | The machine the provider runs on |
+| OS username | The Windows account running the tool, for example `CORP\buildagent` |
+| Data digest | SHA-256 of the payload the denied call submitted. `signtool` submits a digest of the file, so this is not `Get-FileHash yourfile` |
+
+An approver reviews the real command and artifact rather than a blank request. Two things to know before relying on it:
+
+- **The request is pinned to one payload**, so each file needs its own approval and `signing_count` above 1 only allows re-signing that same file. A multi-file `signtool sign` produces one request per file. Widen the scope in Infisical when one approval should cover a batch.
+- **The command is compared exactly**, apart from whitespace. Reordering the flags, a different path to the tool, a changed or added argument, writing `/flag value` as `/flag=value`, a per-build temporary path, or a tool upgrade (its checksum changes) all produce a new request.
+
+> **What leaves the machine:** the command line, executable checksum, hostname and Windows account are sent on every sign call and stored on the approval record, where approvers and auditors can read them. Credential flag values are redacted, but review the list above if your commands carry other sensitive arguments.
+
+Every value except the digest is reported by the provider, so it identifies well-behaved tooling rather than defending against a caller talking straight to the API. The digest is recomputed by Infisical from the payload it is asked to sign, which is why it holds regardless. The provider does not declare an IP address. To limit an approval to one, set it on the request in Infisical.
+
+> **Note:** retrying a denied command does not pile up duplicates. The server treats a pending request from the same requester as the same ask when its scope, its signature count and the length of its signing window all match, so a retry resumes that request instead of opening another.
+>
+> This holds for a Machine Identity, which is the intended setup for a build agent. If you configure `INFISICAL_TOKEN` with a **user** token instead, each retry opens its own request, because requests made by a person are matched on the exact window rather than its length.
 
 ## Uninstall
 

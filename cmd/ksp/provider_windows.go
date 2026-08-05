@@ -208,6 +208,20 @@ func adviceForError(err error) string {
 		return "internal handle error; this usually indicates a host or provider-state bug, not a configuration problem"
 	}
 
+	var opened *infisical.ApprovalRequestOpenedError
+	if errors.As(err, &opened) {
+		return fmt.Sprintf("signing needs approved access, so approval request %s was opened (%s). Ask an "+
+			"approver to review it under Cert Manager > Code Signing > Signers > Approvals, then run the same "+
+			"command again", opened.RequestID, opened.Status)
+	}
+
+	var requestFailed *infisical.ApprovalRequestFailedError
+	if errors.As(err, &requestFailed) {
+		return fmt.Sprintf("signing needs approved access, and opening an approval request failed (%v). Check "+
+			"that the identity may request signing access and that the server is reachable, then run the same "+
+			"command again", requestFailed.RequestErr)
+	}
+
 	var apiErr *infisical.APIError
 	if errors.As(err, &apiErr) {
 		switch {

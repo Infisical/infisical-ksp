@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // Environment variables.
@@ -53,14 +54,20 @@ type AuthConfig struct {
 	Token        string `json:"token"`
 }
 
+type ApprovalConfig struct {
+	SigningCount    int    `json:"signing_count"`
+	SigningDuration string `json:"signing_duration"`
+}
+
 // Config is the on-disk JSON config plus environment overrides.
 type Config struct {
-	ServerURL string      `json:"server_url"`
-	Auth      AuthConfig  `json:"auth"`
-	TLS       TLSConfig   `json:"tls"`
-	Cache     CacheConfig `json:"cache"`
-	LogLevel  string      `json:"log_level"`
-	LogFile   string      `json:"log_file"`
+	ServerURL string         `json:"server_url"`
+	Auth      AuthConfig     `json:"auth"`
+	TLS       TLSConfig      `json:"tls"`
+	Cache     CacheConfig    `json:"cache"`
+	Approval  ApprovalConfig `json:"approval"`
+	LogLevel  string         `json:"log_level"`
+	LogFile   string         `json:"log_file"`
 }
 
 func (c *Config) setDefaults() {
@@ -124,6 +131,18 @@ func (c *Config) validate() error {
 	case AuthMethodUniversalAuth, AuthMethodToken:
 	default:
 		return fmt.Errorf("unsupported auth method: %s (must be 'universal-auth' or 'token')", c.Auth.Method)
+	}
+	if c.Approval.SigningDuration != "" {
+		d, err := parseApprovalDuration(c.Approval.SigningDuration)
+		if err != nil {
+			return fmt.Errorf("invalid approval.signing_duration %q: %w", c.Approval.SigningDuration, err)
+		}
+		if d < time.Minute || d > 30*24*time.Hour {
+			return fmt.Errorf("approval.signing_duration must be between 1m and 30d, got %q", c.Approval.SigningDuration)
+		}
+	}
+	if c.Approval.SigningCount < 0 {
+		return fmt.Errorf("approval.signing_count must be zero or a positive integer, got %d", c.Approval.SigningCount)
 	}
 	return nil
 }
