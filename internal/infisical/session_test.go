@@ -240,8 +240,8 @@ func TestSessionSignAutoRequestsScopedApproval(t *testing.T) {
 	if captured.RequestedSignings != 3 {
 		t.Fatalf("expected 3 requested signings, got %d", captured.RequestedSignings)
 	}
-	if captured.RequestedWindowStart == "" || captured.RequestedWindowEnd == "" {
-		t.Fatal("expected a requested window")
+	if captured.RequestedWindowDuration != "1h" {
+		t.Fatalf("expected the configured window duration, got %q", captured.RequestedWindowDuration)
 	}
 	want := sha256.Sum256(digest)
 	if got := captured.Scope.DataHash; got != hex.EncodeToString(want[:]) {

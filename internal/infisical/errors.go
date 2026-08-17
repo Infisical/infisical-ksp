@@ -1,6 +1,7 @@
 package infisical
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -8,10 +9,11 @@ import (
 // APIError is a non-2xx response from the Infisical API. StatusCode lets the KSP map the
 // failure to the right Windows NTE_* code (for example 403 -> access denied).
 type APIError struct {
-	Operation  string
-	StatusCode int
-	Message    string
-	Code       string
+	Operation         string
+	StatusCode        int
+	Message           string
+	Code              string
+	HasPendingRequest bool
 }
 
 const ErrorCodeApprovalRequired = "ApprovalRequired"
@@ -47,6 +49,35 @@ func (e *ApprovalRequestOpenedError) Error() string {
 }
 
 func (e *ApprovalRequestOpenedError) Unwrap() error { return e.Err }
+
+type ApprovalRequestPendingError struct {
+	Err error
+}
+
+func (e *ApprovalRequestPendingError) Error() string {
+	return fmt.Sprintf("%s (an approval request is already awaiting review)", e.Err.Error())
+}
+
+func (e *ApprovalRequestPendingError) Unwrap() error { return e.Err }
+
+type ApprovalNotConfiguredError struct {
+	Err error
+}
+
+func (e *ApprovalNotConfiguredError) Error() string {
+	return fmt.Sprintf("%s (no approval block is configured, so no request was opened)", e.Err.Error())
+}
+
+func (e *ApprovalNotConfiguredError) Unwrap() error { return e.Err }
+
+func IsApprovalOutcome(err error) bool {
+	var opened *ApprovalRequestOpenedError
+	var pending *ApprovalRequestPendingError
+	var notConfigured *ApprovalNotConfiguredError
+	var failed *ApprovalRequestFailedError
+	return errors.As(err, &opened) || errors.As(err, &pending) ||
+		errors.As(err, &notConfigured) || errors.As(err, &failed)
+}
 
 type ApprovalRequestFailedError struct {
 	Err        error

@@ -237,27 +237,29 @@ func (s *Session) autoRequestOnDenial(
 		return signErr
 	}
 
-	payloadDigest := sha256.Sum256(digest)
-	id, status, err := s.requestApprovalIfConfigured(token, signerID, signCtx, hex.EncodeToString(payloadDigest[:]))
-	switch {
-	case err != nil:
-		return &ApprovalRequestFailedError{Err: signErr, RequestErr: err}
-	case id != "":
-		return &ApprovalRequestOpenedError{Err: signErr, RequestID: id, Status: status}
-	default:
-		return signErr // no approval block configured, so nothing was opened
+	if apiErr.HasPendingRequest {
+		return &ApprovalRequestPendingError{Err: signErr}
 	}
+
+	cfg := s.cfg.Approval
+	if cfg.SigningCount == 0 && cfg.SigningDuration == "" {
+		return &ApprovalNotConfiguredError{Err: signErr}
+	}
+
+	payloadDigest := sha256.Sum256(digest)
+	id, status, err := s.requestApproval(token, signerID, signCtx, hex.EncodeToString(payloadDigest[:]))
+	if err != nil {
+		return &ApprovalRequestFailedError{Err: signErr, RequestErr: err}
+	}
+	return &ApprovalRequestOpenedError{Err: signErr, RequestID: id, Status: status}
 }
 
-func (s *Session) requestApprovalIfConfigured(
+func (s *Session) requestApproval(
 	token, signerID string,
 	signCtx SigningContext,
 	dataHash string,
 ) (id, status string, err error) {
 	cfg := s.cfg.Approval
-	if cfg.SigningCount == 0 && cfg.SigningDuration == "" {
-		return "", "", nil
-	}
 
 	params := ApprovalRequestParams{
 		Justification: approvalJustification(signCtx.Hostname),
@@ -267,13 +269,7 @@ func (s *Session) requestApprovalIfConfigured(
 		params.RequestedSignings = cfg.SigningCount
 	}
 	if cfg.SigningDuration != "" {
-		window, parseErr := parseApprovalDuration(cfg.SigningDuration)
-		if parseErr != nil {
-			return "", "", fmt.Errorf("invalid approval.signing_duration %q: %w", cfg.SigningDuration, parseErr)
-		}
-		now := time.Now().UTC()
-		params.RequestedWindowStart = now.Format(time.RFC3339)
-		params.RequestedWindowEnd = now.Add(window).Format(time.RFC3339)
+		params.RequestedWindowDuration = cfg.SigningDuration
 	}
 
 	return s.client.RequestApproval(token, signerID, params)

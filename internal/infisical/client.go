@@ -166,11 +166,10 @@ func (c *Client) Sign(token, signerID string, p SignParams) (signatureB64 string
 }
 
 type ApprovalRequestParams struct {
-	Justification        string       `json:"justification"`
-	RequestedSignings    int          `json:"requestedSignings,omitempty"`
-	RequestedWindowStart string       `json:"requestedWindowStart,omitempty"`
-	RequestedWindowEnd   string       `json:"requestedWindowEnd,omitempty"`
-	Scope                SigningScope `json:"scope"`
+	Justification           string       `json:"justification"`
+	RequestedSignings       int          `json:"requestedSignings,omitempty"`
+	RequestedWindowDuration string       `json:"requestedWindowDuration,omitempty"`
+	Scope                   SigningScope `json:"scope"`
 }
 
 type approvalRequestResponse struct {
@@ -198,6 +197,9 @@ func (c *Client) RequestApproval(token, signerID string, p ApprovalRequestParams
 type apiErrorBody struct {
 	Message string `json:"message"`
 	Error   string `json:"error"`
+	Details struct {
+		HasPendingRequest bool `json:"hasPendingRequest"`
+	} `json:"details"`
 }
 
 func newAPIError(op string, resp *resty.Response) *APIError {
@@ -210,5 +212,11 @@ func newAPIError(op string, resp *resty.Response) *APIError {
 			msg = body.Error
 		}
 	}
-	return &APIError{Operation: op, StatusCode: resp.StatusCode(), Message: msg, Code: body.Error}
+	return &APIError{
+		Operation:         op,
+		StatusCode:        resp.StatusCode(),
+		Message:           msg,
+		Code:              body.Error,
+		HasPendingRequest: body.Details.HasPendingRequest,
+	}
 }

@@ -153,7 +153,7 @@ The provider is configured by environment variables and an optional JSON config 
 | `cache.token_ttl_seconds` | No | `300` | Auth token cache duration |
 | `cache.cert_ttl_seconds` | No | `3600` | Certificate data cache duration |
 | `cache.signer_ttl_seconds` | No | `300` | Signer list cache duration |
-| `approval.signing_duration` | No | — | Auto-request approval with this time window (`"30m"`, `"8h"`, `"2d"`). The provider accepts 1m to 30d as a sanity check; the real limit is the signer's approval policy, which rejects a request asking for longer. The window starts when the request is opened, not when it is approved, so allow for approval time |
+| `approval.signing_duration` | No | — | Auto-request approval with this time window (`"30m"`, `"8h"`, `"2d"`). The provider accepts 1m to 30d as a sanity check; the real limit is the signer's approval policy, which rejects a request asking for longer. The window starts when the request is approved, so time spent waiting for an approver does not eat into it |
 | `approval.signing_count` | No | — | Auto-request approval for this many signings |
 | `log_level` | No | `info` | Log verbosity: `trace`, `debug`, `info`, `warn`, `error` |
 | `log_file` | No | (disabled) | Path to log file (the provider runs inside signtool, so there is no console) |
@@ -235,6 +235,8 @@ When credentials are available, the provider authenticates automatically the fir
 If a Signer has an approval policy, you need an approved sign request before signing. Without it, `signtool` fails with an access-denied error and the log file records the `HTTP 403` along with a hint to obtain approved access.
 
 Approvals are granted from the Infisical UI (Cert Manager > Code Signing > Signers > `<signer>` > Approvals tab): request signing access, then have an approver approve it (or an Administrator pre-approve it). Once approved, retrying the same `signtool sign` command succeeds for the granted window.
+
+While a request is still pending, the requester and its approvers can stop enforcing individual scope parameters on it, which is what turns a request pinned to one artifact into access for a whole series of builds. See [Approvals](https://infisical.com/docs/documentation/platform/pki/code-signing/approvals#removing-a-parameter-from-a-request).
 
 ### Automatic approval requests
 

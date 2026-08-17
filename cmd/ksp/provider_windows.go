@@ -215,6 +215,21 @@ func adviceForError(err error) string {
 			"command again", opened.RequestID, opened.Status)
 	}
 
+	var pending *infisical.ApprovalRequestPendingError
+	if errors.As(err, &pending) {
+		return "signing needs approved access and your approval request is already awaiting review. Ask an " +
+			"approver to review it under Cert Manager > Code Signing > Signers > Approvals, then run the same " +
+			"command again"
+	}
+
+	var notConfigured *infisical.ApprovalNotConfiguredError
+	if errors.As(err, &notConfigured) {
+		return "signing needs approved access, and this KSP has no approval block configured, so it did not " +
+			"open a request. Ask an approver for access under Cert Manager > Code Signing > Signers > " +
+			"Approvals, or set approval.signing_count and approval.signing_duration in the KSP config so " +
+			"requests are opened for you (https://infisical.com/docs/documentation/platform/pki/code-signing/approvals)"
+	}
+
 	var requestFailed *infisical.ApprovalRequestFailedError
 	if errors.As(err, &requestFailed) {
 		return fmt.Sprintf("signing needs approved access, and opening an approval request failed (%v). Check "+
