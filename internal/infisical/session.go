@@ -263,7 +263,7 @@ func (s *Session) requestApproval(
 
 	params := ApprovalRequestParams{
 		Justification: approvalJustification(signCtx.Hostname),
-		Scope:         signCtx.RequestScope(dataHash),
+		Scope:         signCtx.RequestScope(dataHash, cfg.ExcludeScopeFields, cfg.IPAddress),
 	}
 	if cfg.SigningCount > 0 {
 		params.RequestedSignings = cfg.SigningCount

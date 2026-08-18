@@ -180,6 +180,8 @@ func TestLoadConfigRejectsBadApprovalBlock(t *testing.T) {
 		"duration too long":    `{"server_url":"https://x.test","auth":{"method":"token","token":"t"},"approval":{"signing_duration":"60d"}}`,
 		"negative duration":    `{"server_url":"https://x.test","auth":{"method":"token","token":"t"},"approval":{"signing_duration":"-1h"}}`,
 		"negative count":       `{"server_url":"https://x.test","auth":{"method":"token","token":"t"},"approval":{"signing_count":-5}}`,
+		"unknown scope field":  `{"server_url":"https://x.test","auth":{"method":"token","token":"t"},"approval":{"exclude_scope_fields":["dataHash"]}}`,
+		"ip_address not an ip": `{"server_url":"https://x.test","auth":{"method":"token","token":"t"},"approval":{"ip_address":"build-agent-02"}}`,
 	}
 
 	for name, body := range cases {
@@ -200,7 +202,7 @@ func TestLoadConfigRejectsBadApprovalBlock(t *testing.T) {
 func TestLoadConfigAcceptsAValidApprovalBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	body := `{"server_url":"https://x.test","auth":{"method":"token","token":"t"},"approval":{"signing_count":5,"signing_duration":"8h"}}`
+	body := `{"server_url":"https://x.test","auth":{"method":"token","token":"t"},"approval":{"signing_count":5,"signing_duration":"8h","exclude_scope_fields":["data_hash"],"ip_address":"203.0.113.10"}}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -212,5 +214,11 @@ func TestLoadConfigAcceptsAValidApprovalBlock(t *testing.T) {
 	}
 	if cfg.Approval.SigningCount != 5 || cfg.Approval.SigningDuration != "8h" {
 		t.Fatalf("approval block did not round-trip: %+v", cfg.Approval)
+	}
+	if len(cfg.Approval.ExcludeScopeFields) != 1 || cfg.Approval.ExcludeScopeFields[0] != scopeFieldDataHash {
+		t.Fatalf("exclusions did not round-trip: %+v", cfg.Approval.ExcludeScopeFields)
+	}
+	if cfg.Approval.IPAddress != "203.0.113.10" {
+		t.Fatalf("the pinned address did not round-trip: %q", cfg.Approval.IPAddress)
 	}
 }
