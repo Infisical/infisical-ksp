@@ -261,7 +261,7 @@ That first `signtool sign` still fails, because an approver has to act on the re
 | Signing application | The host process executable name, plus its SHA-256 checksum |
 | Hostname | The machine the provider runs on |
 | OS username | The Windows account running the tool, for example `CORP\buildagent` |
-| Data digest | SHA-256 of the payload the denied call submitted. `signtool` submits a digest of the file, so this is not `Get-FileHash yourfile` |
+| Data hash | SHA-256 of the payload the denied call submitted. `signtool` submits a digest of the file, so this is not `Get-FileHash yourfile` |
 
 An approver reviews the real command and artifact rather than a blank request. Two things to know before relying on it:
 
