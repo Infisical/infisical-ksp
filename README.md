@@ -153,6 +153,10 @@ The provider is configured by environment variables and an optional JSON config 
 | `cache.token_ttl_seconds` | No | `300` | Auth token cache duration |
 | `cache.cert_ttl_seconds` | No | `3600` | Certificate data cache duration |
 | `cache.signer_ttl_seconds` | No | `300` | Signer list cache duration |
+| `approval.signing_duration` | No | — | Auto-request approval with this time window (`"30m"`, `"8h"`, `"2d"`). The provider accepts 1m to 30d as a sanity check; the real limit is the signer's approval policy, which rejects a request asking for longer. The window starts when the request is approved, so time spent waiting for an approver does not eat into it |
+| `approval.signing_count` | No | — | Auto-request approval for this many signings |
+| `approval.exclude_scope_fields` | No | — | Signing parameters to leave out of the requests the provider opens, so one approval covers any value of them: `command`, `signing_application`, `signing_application_hash`, `hostname`, `os_username`, `ip_address`, `data_hash`. An unknown name is rejected at load |
+| `approval.ip_address` | No | — | Pin the requests the provider opens to this address instead of the one Infisical sees them arrive from, which is what it uses when this is unset. It need not be this host's, so you can name a build agent's egress address. Infisical enforces the address it sees either way, so this only ever narrows access |
 | `log_level` | No | `info` | Log verbosity: `trace`, `debug`, `info`, `warn`, `error` |
 | `log_file` | No | (disabled) | Path to log file (the provider runs inside signtool, so there is no console) |
 
@@ -232,9 +236,45 @@ When credentials are available, the provider authenticates automatically the fir
 
 If a Signer has an approval policy, you need an approved sign request before signing. Without it, `signtool` fails with an access-denied error and the log file records the `HTTP 403` along with a hint to obtain approved access.
 
-Approvals are granted out of band from the Infisical UI (Cert Manager > Code Signing > Signers > `<signer>` > Approvals tab): request signing access, then have an approver approve it (or an Administrator pre-approve it). Once approved, retrying the same `signtool sign` command succeeds for the granted window.
+Approvals are granted from the Infisical UI (Cert Manager > Code Signing > Signers > `<signer>` > Approvals tab): request signing access, then have an approver approve it (or an Administrator pre-approve it). Once approved, retrying the same `signtool sign` command succeeds for the granted window.
 
-> **Note:** Unlike the PKCS#11 module, this provider does not auto-create approval requests; request and approve access from the UI before signing.
+A request's scope is fixed once it is open. Nobody edits it during review, including the approvers, so a request whose parameters are wrong is rejected and reopened with the ones you want. To have a request cover a series of builds rather than one artifact, leave the parameters that vary out of it in the first place with `approval.exclude_scope_fields`. See [Approvals](https://infisical.com/docs/documentation/platform/pki/code-signing/approvals).
+
+### Automatic approval requests
+
+Add an `approval` block and the provider opens a request for you the first time signing is denied:
+
+```json
+{
+  "approval": {
+    "signing_duration": "8h",
+    "signing_count": 10
+  }
+}
+```
+
+That first `signtool sign` still fails, because an approver has to act on the request. The request carries the signing situation the provider observed, so the approval it produces is [scoped](https://infisical.com/docs/documentation/platform/pki/code-signing/approvals#scoping-an-approval) to it:
+
+| Parameter | Captured from |
+|-----------|---------------|
+| Command | The host process command line (`signtool`, MSBuild, ...). Values following credential flags (`/p`, `-storepass`, `-keypass`, `-pass`, `--password`) are redacted before the command leaves the machine |
+| Signing application | The host process executable name, plus its SHA-256 checksum |
+| Hostname | The machine the provider runs on |
+| OS username | The Windows account running the tool, for example `CORP\buildagent` |
+| Data hash | SHA-256 of the payload the denied call submitted. `signtool` submits a digest of the file, so this is not `Get-FileHash yourfile` |
+
+An approver reviews the real command and artifact rather than a blank request. Two things to know before relying on it:
+
+- **The request is pinned to one payload**, so each file needs its own approval and `signing_count` above 1 only allows re-signing that same file. A multi-file `signtool sign` produces one request per file. Add `data_hash` to `approval.exclude_scope_fields` when one approval should cover a batch. A timestamped signature is the common case: the digest changes between runs even for the same file, so pinning it means a fresh approval for every build.
+- **The command is compared exactly**, apart from whitespace. Reordering the flags, a different path to the tool, a changed or added argument, writing `/flag value` as `/flag=value`, a per-build temporary path, or a tool upgrade (its checksum changes) all produce a new request.
+
+> **What leaves the machine:** the command line, executable checksum, hostname and Windows account are sent on every sign call and stored on the approval record, where approvers and auditors can read them. Credential flag values are redacted, but review the list above if your commands carry other sensitive arguments.
+
+Every value except the digest is reported by the provider, so it identifies well-behaved tooling rather than defending against a caller talking straight to the API. The digest is recomputed by Infisical from the payload it is asked to sign, which is why it holds regardless. The provider does not observe an IP address, because the address that matters is the one Infisical receives the sign call from, after any NAT or proxy in between. Infisical fills that address in for you, so requests are scoped by address by default. Set `approval.ip_address` to pin a different one, which is how you tie an approval to a build agent's egress address, or add `ip_address` to `approval.exclude_scope_fields` to leave signing unrestricted by address. Infisical always compares against the address it sees, so neither setting can widen access.
+
+> **Note:** retrying a denied command does not pile up duplicates. The server treats a pending request from the same requester as the same ask when its scope, its signature count and the length of its signing window all match, so a retry resumes that request instead of opening another.
+>
+> This holds for a Machine Identity, which is the intended setup for a build agent. If you configure `INFISICAL_TOKEN` with a **user** token instead, each retry opens its own request, because requests made by a person are matched on the exact window rather than its length.
 
 ## Uninstall
 
@@ -273,6 +313,7 @@ Enable debug logging by adding to your config file:
 | `401` in the log | Missing or wrong Machine Identity credentials | Set `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID` and `CLIENT_SECRET`; confirm the identity is a Signer member with the Administrator or Operator role (Auditors cannot sign) |
 | `auth method temporarily locked` in the log | Too many failed logins (usually wrong credentials) | Wait a few minutes for the lockout to clear, then retry with the correct credentials |
 | `No certificates were found that met all the given criteria` | The `/f` certificate does not match the `/kc` Signer | Use the certificate that belongs to the Signer |
+| signtool fails immediately and the log you configured stays empty | The config file could not be read, so the log path in it is unknown too | The reason is written to the default log instead. Read `%ProgramData%\Infisical\ksp.log`, which names the setting at fault (an unknown `exclude_scope_fields` entry, a malformed `ip_address`, or invalid JSON such as a UTF-8 BOM) |
 | Build cannot find `ncrypt_provider.h` | CPDK not installed, or its `Include` not on `INCLUDE` | Install the CPDK (download id=30688); add its `Include` folder to `INCLUDE` or `CGO_CFLAGS` |
 
 ## Building from Source

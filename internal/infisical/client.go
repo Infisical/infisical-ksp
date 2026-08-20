@@ -140,7 +140,7 @@ type SignParams struct {
 	DataB64          string         `json:"data"`
 	SigningAlgorithm string         `json:"signingAlgorithm"`
 	IsDigest         bool           `json:"isDigest"`
-	ClientMetadata   map[string]any `json:"clientMetadata,omitempty"`
+	ClientMetadata   ClientMetadata `json:"clientMetadata"`
 }
 
 type signResponse struct {
@@ -165,9 +165,41 @@ func (c *Client) Sign(token, signerID string, p SignParams) (signatureB64 string
 	return out.Signature, nil
 }
 
+type ApprovalRequestParams struct {
+	Justification           string       `json:"justification"`
+	RequestedSignings       int          `json:"requestedSignings,omitempty"`
+	RequestedWindowDuration string       `json:"requestedWindowDuration,omitempty"`
+	Scope                   SigningScope `json:"scope"`
+}
+
+type approvalRequestResponse struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+func (c *Client) RequestApproval(token, signerID string, p ApprovalRequestParams) (id string, status string, err error) {
+	const op = "request-approval"
+	var out approvalRequestResponse
+	resp, err := c.http.R().
+		SetAuthToken(token).
+		SetBody(p).
+		SetResult(&out).
+		Post(fmt.Sprintf("/api/v1/cert-manager/signers/%s/requests", url.PathEscape(signerID)))
+	if err != nil {
+		return "", "", &RequestError{Operation: op, Err: err}
+	}
+	if resp.IsError() {
+		return "", "", newAPIError(op, resp)
+	}
+	return out.ID, out.Status, nil
+}
+
 type apiErrorBody struct {
 	Message string `json:"message"`
 	Error   string `json:"error"`
+	Details struct {
+		HasPendingRequest bool `json:"hasPendingRequest"`
+	} `json:"details"`
 }
 
 func newAPIError(op string, resp *resty.Response) *APIError {
@@ -180,5 +212,11 @@ func newAPIError(op string, resp *resty.Response) *APIError {
 			msg = body.Error
 		}
 	}
-	return &APIError{Operation: op, StatusCode: resp.StatusCode(), Message: msg}
+	return &APIError{
+		Operation:         op,
+		StatusCode:        resp.StatusCode(),
+		Message:           msg,
+		Code:              body.Error,
+		HasPendingRequest: body.Details.HasPendingRequest,
+	}
 }

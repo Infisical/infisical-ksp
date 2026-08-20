@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/Infisical/infisical-ksp/internal/infisical"
 )
 
 // The provider runs inside signtool (no console), so it logs to a file from config. Logging is
@@ -37,8 +39,15 @@ func setupLogging(file string) {
 // logError logs the failure and, when available, a fix-it hint (signtool only shows a generic
 // NTE_* code).
 func logError(op string, err error) {
+	advice := adviceForError(err)
+
+	if advice != "" && infisical.IsApprovalOutcome(err) {
+		logger.Printf("ERROR %s: %s", op, advice)
+		return
+	}
+
 	logger.Printf("ERROR %s: %v", op, err)
-	if hint := adviceForError(err); hint != "" {
-		logger.Printf("HINT  %s: %s", op, hint)
+	if advice != "" {
+		logger.Printf("HINT  %s: %s", op, advice)
 	}
 }
