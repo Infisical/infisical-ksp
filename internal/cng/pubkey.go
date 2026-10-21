@@ -60,16 +60,11 @@ func ECCPublicBlob(pub *ecdsa.PublicKey) ([]byte, error) {
 	binary.LittleEndian.PutUint32(out[0:], magic)
 	binary.LittleEndian.PutUint32(out[4:], uint32(cbKey))
 
-	out = append(out, leftPad(pub.X.Bytes(), cbKey)...)
-	out = append(out, leftPad(pub.Y.Bytes(), cbKey)...)
-	return out, nil
-}
-
-func leftPad(b []byte, size int) []byte {
-	if len(b) >= size {
-		return b
+	// Bytes is the uncompressed point 0x04 || X || Y, with each coordinate already cbKey bytes.
+	point, err := pub.Bytes()
+	if err != nil {
+		return nil, fmt.Errorf("invalid EC public key: %w", err)
 	}
-	out := make([]byte, size)
-	copy(out[size-len(b):], b)
-	return out
+	out = append(out, point[1:]...)
+	return out, nil
 }
