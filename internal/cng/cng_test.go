@@ -157,10 +157,9 @@ func TestECCPublicBlob(t *testing.T) {
 		if len(blob) != 8+2*c.cbKey {
 			t.Errorf("blob length = %d, want %d", len(blob), 8+2*c.cbKey)
 		}
-		x := new(big.Int).SetBytes(blob[8 : 8+c.cbKey])
-		y := new(big.Int).SetBytes(blob[8+c.cbKey:])
-		if x.Cmp(key.X) != 0 || y.Cmp(key.Y) != 0 {
-			t.Error("X or Y coordinate mismatch")
+		parsed, err := ecdsa.ParseUncompressedPublicKey(c.curve, append([]byte{0x04}, blob[8:]...))
+		if err != nil || !parsed.Equal(&key.PublicKey) {
+			t.Errorf("X or Y coordinate mismatch: %v", err)
 		}
 	}
 }

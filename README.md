@@ -325,7 +325,7 @@ git clone https://github.com/Infisical/infisical-ksp.git
 cd infisical-ksp
 ```
 
-The DLL itself is cgo and Windows-only. Build it on Windows (Go 1.24+, a C compiler such as MinGW or MSVC, the Windows SDK, and the Cryptographic Provider Development Kit for `ncrypt_provider.h`):
+The DLL itself is cgo and Windows-only. Build it on Windows (Go 1.27.3+, a C compiler such as MinGW or MSVC, the Windows SDK, and the Cryptographic Provider Development Kit for `ncrypt_provider.h`):
 
 ```powershell
 $env:CGO_ENABLED = "1"
